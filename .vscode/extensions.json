@@ -1,5 +1,11 @@
 {
     "recommendations": [
-        "github.vscode-github-actions"
+        "github.vscode-github-actions",
+        "davidanson.vscode-markdownlint",
+        "hediet.vscode-drawio",
+        "ms-vscode.vscode-github-issue-notebooks",
+        "codespaces-contrib.codeswing",
+        "tyriar.luna-paint",
+        "esbenp.prettier-vscode"
     ]
 }
