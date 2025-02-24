@@ -1,0 +1,124 @@
+# This workflow will triage pull requests and apply a label based on the
+# paths that are modified in the pull request.
+#
+# To use this workflow, you will need to set up a .github/labeler.yml
+# file with configuration.  For more information, see:
+# https://github.com/actions/labeler
+# name: Advanced Scraping & Deployment
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # Daily at 12 PM UTC
+  workflow_dispatch:  # Manual trigger
+
+env:
+  AWS_REGION: 'us-east-1'
+  S3_BUCKET: 'my-scraped-data-bucket'
+  SCRAPE_URL: 'https://example.com/products'
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      timestamp: ${{ steps.date.outputs.timestamp }}
+    steps:
+      - name: Get current date
+        id: date
+        run: echo "timestamp=$(date +'%Y-%m-%d_%H-%M')" >> $GITHUB_OUTPUT
+
+  scraping:
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        category: ['electronics', 'books', 'clothing']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-scraper.txt
+
+      - name: Run Scraper with Proxy
+        env:
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+        run: |
+          python scraper.py \
+            --url "$SCRAPE_URL/${{ matrix.category }}" \
+            --output "data/${{ needs.setup.outputs.timestamp }}/${{ matrix.category }}.json" \
+            --proxy $PROXY_SERVER \
+            --retries 3
+
+      - name: Upload Scraped Data
+        uses: actions/upload-artifact@v3
+        with:
+          name: scraped-data
+          path: data/${{ needs.setup.outputs.timestamp }}/
+          retention-days: 1
+
+  process-data:
+    runs-on: ubuntu-latest
+    needs: scraping
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: scraped-data
+
+      - name: Data Processing
+        uses: docker://python:3.10-slim
+          usage:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        
+        run: |
+          pip install pandas awscli
+          python process_data.py \
+            --input-dir data \
+            --output-dir processed \
+            --timestamp ${{ needs.setup.outputs.timestamp }}
+
+          # Upload to S3
+          aws s3 sync processed/ s3://$S3_BUCKET/${{ needs.setup.outputs.timestamp }}/
+
+      - name: Generate Report
+        run: |
+          python generate_report.py \
+            --timestamp ${{ needs.setup.outputs.timestamp }} \
+            --output report.html
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          publish_branch: gh-pages
+          keep_files: true
+
+  monitor:
+    runs-on: ubuntu-latest
+    needs: process-data
+    if: always()
+    steps:
+      - name: Check Success
+        if: success()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_MESSAGE: "Scraping completed successfully! Report: https://<your-github-username>.github.io/<repo>/report.html"
+
+      - name: Check Failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_MESSAGE: "Scraping failed! Check https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
